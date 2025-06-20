@@ -136,7 +136,6 @@ async def gdz(message: Message):
     except Exception as e:
         await message.reply(f"Произошел какой-то ужас: {e}")
 
-
 @router.message(Command(commands=["reset", "delcontext"]), F.chat.type == "private")
 async def reset(message: Message):
     if not isUserInWhiteList(message.chat.id):
@@ -148,6 +147,18 @@ async def reset(message: Message):
     chat_context = [{"role": "system", "content": getprompt()}]
     savehistory(chat_id, chat_context)
     await message.bot.send_message(chat_id, text)
+
+@router.message(Command("prompt"), F.chat.type == "private")
+async def prompt(message: Message):
+    if not isUserInWhiteList(message.chat.id):
+        await blacklist(message)
+        return
+    if message.from_user.id in ADMIN_ID:
+        p = " ".join(message.text.split()[1:])
+        with open("prompt.txt", "w") as f:
+            f.write(p)
+        await message.reply("Success")
+
 
 @router.message(Command("model"), F.chat.type == "private")
 async def model(message: Message):
