@@ -6,7 +6,9 @@ from io import BytesIO
 from start import log
 import requests
 import asyncio
+import codecs
 import json
+import html
 import g4f
 
 
@@ -18,13 +20,13 @@ MODELS = ["gpt-4o", "gpt-3.5-turbo", "gemini-1.5-flash", "gemini-1.5-pro", "deep
 router = Router()
 
 def savehistory(chatid, history):
-    with open(f"history/{chatid}.json", "w", encoding="utf-16") as f:
+    with open(f"history/{chatid}.json", "w", encoding="utf-8") as f:
         json.dump(history, f)
 
 def gethistory(chatid):
-    with open(f"history/{chatid}.json", "r", encoding="utf-16") as f:
+    with open(f"history/{chatid}.json", "r", encoding="utf-8") as f:
         chat_context = json.load(f)
-    return chat_context[-100:]
+    return chat_context
 
 def getprompt():
     with open("prompt.txt") as f:
@@ -42,18 +44,11 @@ async def blacklist(message: Message):
 
 async def gpt(message: Message):
     global GPTModel
-
     userInput = message.text.strip()
     chat_id = message.chat.id
     log(f"@{message.from_user.username} : {userInput}")
-
     chat_context = gethistory(chat_id)
-
     chat_context.append({"role": "user", "content": userInput})
-    await message.bot.send_chat_action(message.chat.id, 'typing')
-    prompt = f'Пользователь по имени {message.from_user.first_name} спросил: "{userInput}". Ответь четко и ясно на его вопрос.'
-    prompt += "\nИстория беседы:\n" + "\n".join([item["content"] for item in chat_context])
-
     try:
         response = g4f.ChatCompletion.create(
             model = GPTModel,
@@ -67,18 +62,20 @@ async def gpt(message: Message):
         assistant_message = f"Произошла ошибка при генерации ответа: {str(e)}"
         log(assistant_message)
 
-    chat_context.append({"role": "assistant", "content": assistant_message})
-
     def delete_think(assistant_message):
-        assistant_message = assistant_message[assistant_message.rfind("<ans>") + 5: assistant_message.rfind("</ans>")]
+        if "<ans>" in assistant_message and "</ans>" in assistant_message:
+            assistant_message = assistant_message[assistant_message.rfind("<ans>") + 5: assistant_message.rfind("</ans>")]
         return assistant_message
     
     log(assistant_message)
     assistant_message = delete_think(assistant_message)
-    # decoded_response = html.unescape(assistant_message)
+    decoded_response = html.unescape(assistant_message)
+    log(decoded_response)
+    chat_context.append({"role": "assistant", "content": assistant_message})
     savehistory(chat_id, chat_context)
     split_messages = split_long_message(assistant_message)
     for msg in split_messages:
+        log(msg)
         await message.reply(msg, parse_mode="Markdown")
 
 def split_long_message(message, chunkSize=4096):
@@ -90,9 +87,11 @@ async def start(message: Message):
         await blacklist(message)
         return
     chat_id = message.chat.id
-    chat_context = [{"role": "system", "content": getprompt()}]
+    prompt = getprompt() + '\n'
+    prompt += f"Меня зовут {message.from_user.first_name}"
+    chat_context = [{"role": "user", "content": prompt}]
     savehistory(chat_id, chat_context)
-    await gpt(message)
+    await keepTyping(message, gpt)
 
 @router.message(Command("menu"), F.chat.type == "private")
 async def menu(message: Message):
@@ -144,9 +143,12 @@ async def reset(message: Message):
     chat_id = message.chat.id
     with open("end-message.txt") as f:
         text = f.readlines()[0].strip()
-    chat_context = [{"role": "system", "content": getprompt()}]
+    prompt = getprompt() + '\n'
+    prompt += f"Меня зовут {message.from_user.first_name}"
+    chat_context = [{"role": "user", "content": prompt}]
     savehistory(chat_id, chat_context)
     await message.bot.send_message(chat_id, text)
+    await keepTyping(message, gpt)
 
 @router.message(Command("prompt"), F.chat.type == "private")
 async def prompt(message: Message):
@@ -159,31 +161,28 @@ async def prompt(message: Message):
             f.write(p)
         await message.reply("Success")
 
+async def keepTyping(message, func):
+    cancel = False
 
-@router.message(Command("model"), F.chat.type == "private")
-async def model(message: Message):
-    global GPTModel
+    async def typing():
+        nonlocal cancel
+        while not cancel:
+            await message.bot.send_chat_action(message.chat.id, "typing")
+            await asyncio.sleep(5)
+    
+    async def thinking():
+        nonlocal cancel
+        await func(message)
+        cancel = True
 
-    if not isUserInWhiteList(message.chat.id):
-        await blacklist(message)
-        return
-    if message.from_user.id in ADMIN_ID:
-        try:
-            model = message.text.split()[1]
-            if model in MODELS:
-                GPTModel = model
-                await message.reply(f"success : {GPTModel}")
-            else:
-                await message.reply(f"models : {MODELS}")
-        except Exception:
-            await message.reply(f"models : {'; '.join(MODELS)}\ncurrent model: {GPTModel}")
+    await asyncio.gather(typing(), thinking())
 
 @router.message(F.chat.type == "private", F.text)
 async def textGPT(message: Message):
     if not isUserInWhiteList(message.chat.id):
         await blacklist(message)
         return
-    await gpt(message)
+    await keepTyping(message, gpt)
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
