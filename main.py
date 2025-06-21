@@ -6,9 +6,7 @@ from io import BytesIO
 from start import log
 import requests
 import asyncio
-import codecs
 import json
-import html
 import g4f
 
 
@@ -48,6 +46,7 @@ async def gpt(message: Message):
     chat_id = message.chat.id
     log(f"@{message.from_user.username} : {userInput}")
     chat_context = gethistory(chat_id)
+    userInput += "\n\nНапоминаю: " + getprompt()
     chat_context.append({"role": "user", "content": userInput})
     try:
         response = g4f.ChatCompletion.create(
@@ -65,23 +64,30 @@ async def gpt(message: Message):
     def delete_think(assistant_message):
         if "<ans>" in assistant_message and "</ans>" in assistant_message:
             assistant_message = assistant_message[assistant_message.rfind("<ans>") + 5: assistant_message.rfind("</ans>")]
+        if "<ans>" in assistant_message:
+            assistant_message = assistant_message[assistant_message.rfind("<ans>") + 5:]
+        remove = ["Started thinking...\n"]
+        for phrase in remove:
+            assistant_message = assistant_message.replace(phrase, "")
         return assistant_message
     
     log(assistant_message)
     assistant_message = delete_think(assistant_message)
-    decoded_response = html.unescape(assistant_message)
-    log(decoded_response)
+    # decoded_response = html.unescape(assistant_message)
     chat_context.append({"role": "assistant", "content": assistant_message})
     savehistory(chat_id, chat_context)
     split_messages = split_long_message(assistant_message)
     for msg in split_messages:
         log(msg)
-        await message.reply(msg, parse_mode="Markdown")
+        try:
+            await message.reply(msg, parse_mode="Markdown")
+        except Exception as e:
+            await message.reply("Че-то херня какая-то случилась, ответа не будет", parse_mode="Markdown")
 
 def split_long_message(message, chunkSize=4096):
     return [message[i:i + chunkSize] for i in range(0, len(message), chunkSize)]
 
-@router.message(CommandStart(), F.chat.type == "private")
+@router.message(Command("start"), F.chat.type == "private")
 async def start(message: Message):
     if not isUserInWhiteList(message.chat.id):
         await blacklist(message)
@@ -162,18 +168,19 @@ async def prompt(message: Message):
         await message.reply("Success")
 
 async def keepTyping(message, func):
-    cancel = False
+    cnt = 0
 
     async def typing():
-        nonlocal cancel
-        while not cancel:
+        nonlocal cnt
+        while 0 <= cnt <= 5:
             await message.bot.send_chat_action(message.chat.id, "typing")
             await asyncio.sleep(5)
+            cnt += 1
     
     async def thinking():
-        nonlocal cancel
+        nonlocal cnt
         await func(message)
-        cancel = True
+        cnt = -10000
 
     await asyncio.gather(typing(), thinking())
 
